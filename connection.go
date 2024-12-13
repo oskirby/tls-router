@@ -19,22 +19,23 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
-	"time"
 
 	"github.com/oskirby/tls-router/tlsproto"
 )
 
 type TlsConnection struct {
-	conn net.Conn
+	conn    *net.TCPConn
+	config  *Configuration
 
 	// Values to parse out of the handshake.
 	Versions      []tlsproto.ProtocolVersion
 	ServerNames   []string
 	AlpnProtocols []string
+	CipherSuites  []tlsproto.CipherSuite
 
 	// Data read from the connnection.
 	recordHeader [5]byte
@@ -42,20 +43,6 @@ type TlsConnection struct {
 }
 
 func (client *TlsConnection) handleRequest(ctx context.Context) error {
-	defer client.conn.Close()
-
-	// Create a context for the connection setup. If we don't get a complete
-	// ClientHello within its timeout, then we should give up and close the
-	// connection.
-	setupCtx, setupCancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer setupCancel()
-	go func() {
-		<-setupCtx.Done()
-		if !errors.Is(setupCtx.Err(), context.Canceled) {
-			client.conn.Close()
-		}
-	}()
-
 	// Step 1: Read the TLS record header from the connection.
 	rxLen, err := client.conn.Read(client.recordHeader[:])
 	if rxLen < len(client.recordHeader) {
@@ -87,9 +74,9 @@ func (client *TlsConnection) handleRequest(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("handshake error: %v", err)
 	}
-	setupCancel()
 
-	// TODO: We may now route the connection to the backend server.
+	// Handshake processing is done, it's now up to the router to decide what
+	// to do with this connection.
 	return nil
 }
 
@@ -115,9 +102,9 @@ func (client *TlsConnection) processHandshake() error {
 		return err
 	}
 
-	// If no other version is found, default to the legacy handshake version.
 	client.Versions = make([]tlsproto.ProtocolVersion, 1)
 	client.Versions[0] = hello.Version
+	client.CipherSuites = hello.CipherSuites
 
 	// First pass: Parse for useful extensions
 	for _, ext := range hello.Extensions {
@@ -246,6 +233,29 @@ func (client *TlsConnection) processExtSupportedVersions(ext *tlsproto.Extension
 	for offset := 1; offset+2 <= vEnd; offset += 2 {
 		version := binary.BigEndian.Uint16(ext.ExtData[offset : offset+2])
 		client.Versions = append(client.Versions, tlsproto.ProtocolVersion(version))
+	}
+
+	return nil
+}
+
+func (client *TlsConnection) resendHandshake(dest io.Writer) error {
+	// Re-send the record header.
+	n, err := dest.Write(client.recordHeader[:])
+	if err != nil {
+		return err
+	}
+	if n != len(client.recordHeader) {
+		return fmt.Errorf("backend record truncated")
+	}
+
+	// Resend the ClientHello message
+	txLen := 0
+	for txLen < len(client.recordData) {
+		n, err := dest.Write(client.recordData[txLen:])
+		if err != nil {
+			return err
+		}
+		txLen += n
 	}
 
 	return nil

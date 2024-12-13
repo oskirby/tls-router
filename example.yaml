@@ -3,10 +3,10 @@ listen:
 routes:
   root.manawolf.net:
     sni: root.manawolf.net
-    target: 192.168.1.8:8443
+    targets: [192.168.1.8:8443]
   thorium.manawolf.net:
     sni: thorium.manawolf.net
-    target: 192.168.1.16:8006
+    targets: [192.168.1.16:8006]
   default:
     alpn: acme-tls/1
-    target: 192.168.1.8:10443
+    targets: [192.168.1.8:10443]

@@ -69,6 +69,3 @@ print("\tdefault:")
 print('\t\treturn fmt.Sprintf("UNKNOWN-%04x", *cipher)')
 print('\t}')
 print('}')
-
-    
-

@@ -27,12 +27,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type RouteConfig struct {
-	Alpn   string `yaml:"alpn"`
-	Sni    string `yaml:"sni"`
-	Target string `yaml:"target"`
-}
-
 type ListenConfig string
 
 type Configuration struct {
