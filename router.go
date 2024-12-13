@@ -221,7 +221,7 @@ func (server *Server) runConnection(conn *net.TCPConn, ctx context.Context) {
 		if err != nil {
 			return
 		}
-		
+
 		// Exchange data between client and backend.
 		wg := sync.WaitGroup{}
 		defer wg.Wait()

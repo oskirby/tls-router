@@ -28,8 +28,8 @@ import (
 )
 
 type TlsConnection struct {
-	conn    *net.TCPConn
-	config  *Configuration
+	conn   *net.TCPConn
+	config *Configuration
 
 	// Values to parse out of the handshake.
 	Versions      []tlsproto.ProtocolVersion

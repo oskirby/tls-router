@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -102,10 +103,22 @@ func (conf *Configuration) run() error {
 
 func main() {
 	var configFile string
+	var genEchKey string
 
 	// Parse the configuration and command line options.
 	flag.StringVar(&configFile, "c", "", "Configuration file")
+	flag.StringVar(&genEchKey, "g", "", "Generate ECH private key")
 	flag.Parse()
+
+	// If we requested ECH key generation, generate the key and exit.
+	if len(genEchKey) != 0 {
+		err := RunEchGenerateKey(genEchKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ech key generation failed: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	// Parse the configuration file.
 	var conf Configuration
