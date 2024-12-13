@@ -103,18 +103,18 @@ func (conf *Configuration) run() error {
 
 func main() {
 	var configFile string
-	var genEchKey string
+	var genHpkeKey string
 
 	// Parse the configuration and command line options.
 	flag.StringVar(&configFile, "c", "", "Configuration file")
-	flag.StringVar(&genEchKey, "g", "", "Generate ECH private key")
+	flag.StringVar(&genHpkeKey, "g", "", "Generate HPKE private key")
 	flag.Parse()
 
 	// If we requested ECH key generation, generate the key and exit.
-	if len(genEchKey) != 0 {
-		err := RunEchGenerateKey(genEchKey)
+	if len(genHpkeKey) != 0 {
+		err := RunHpkeGenerateKey(genHpkeKey)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ech key generation failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "hpke key generation failed: %v\n", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
