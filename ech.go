@@ -18,38 +18,68 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 
 	"github.com/cloudflare/circl/hpke"
 )
 
-type HpkeCipherSuite struct {
-	KdfId  hpke.KDF
-	AeadId hpke.AEAD
+const ECHVersion uint16 = 0xfe0d
+
+func (ech *ECHConfigContents) SetupPrivate() error {
+	// Load and validate the HPKE keys
+	kem := hpke.KEM(ech.KemId)
+	if !kem.IsValid() {
+		return fmt.Errorf("unsupported hpke kem: %s", HpkeKemString(kem))
+	}
+	if len(ech.PrivateKey) == 0 {
+		// Load the private key from a file, if provided.
+		if len(ech.PrivateKeyFile) == 0 {
+			return fmt.Errorf("no private key provided")
+		}
+		data, err := os.ReadFile(ech.PrivateKeyFile)
+		if err != nil {
+			return err
+		}
+		keyblob, err := HpkeKeyParse(string(data))
+		if err != nil {
+			return err
+		}
+		ech.PrivateKey = keyblob
+	}
+	privkey, err := kem.Scheme().UnmarshalBinaryPrivateKey(ech.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("invalid hpke private key: %v", err)
+	}
+	ech.hpkePrivateKey = privkey
+
+	// Recover the public key.
+	pubkey, err := ech.hpkePrivateKey.Public().MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("hpke public key error: %v", err)
+	}
+	ech.PublicKey = pubkey
+
+	// Validate the cipher suites
+	for _, cipher := range ech.CipherSuites {
+		if !cipher.KdfId.IsValid() {
+			return fmt.Errorf("unsupported cipher kdf: %s", HpkeKdfString(cipher.KdfId))
+		}
+		if !cipher.AeadId.IsValid() {
+			return fmt.Errorf("unsupported cipher aead: %s", HpkeAeadString(cipher.AeadId))
+		}
+	}
+
+	return nil
 }
 
-type HpkeKey []byte
-
-func (key *HpkeKey) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var b64string string
-	err := unmarshal(&b64string)
+func RunEchGenerateSvcb(list ECHConfigList) error {
+	result, err := list.MarshalBinary()
 	if err != nil {
 		return err
 	}
 
-	decode, err := base64.StdEncoding.DecodeString(b64string)
-	if err != nil {
-		return fmt.Errorf("base64 error: %v", err)
-	}
-
-	*key = decode
+	// Encode to base64 and output
+	encode := base64.StdEncoding.EncodeToString(result)
+	fmt.Fprintf(os.Stdout, "ech=%s\n", encode)
 	return nil
-}
-
-type ECHConfig struct {
-	ConfigId       uint8             `yaml:"config_id"`
-	KemId          hpke.KEM          `yaml:"kem_id"`
-	PrivateKey     HpkeKey           `yaml:"private_key,omitempty"`
-	PrivateKeyFile string            `yaml:"private_key_file,omitempty"`
-	CipherSuites   []HpkeCipherSuite `yaml:"cipher_suites"`
-	PublicName     string            `yaml:"public_name"`
 }

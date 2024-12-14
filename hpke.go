@@ -16,6 +16,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -25,6 +26,43 @@ import (
 	"github.com/cloudflare/circl/hpke"
 	"golang.org/x/exp/constraints"
 )
+
+type HpkeKey []byte
+
+func HpkeKeyParse(s string) (HpkeKey, error) {
+	// We can accept the key as a PEM-encoded block
+	block, _ := pem.Decode([]byte(s))
+	if block != nil {
+		if block.Type != "HPKE PRIVATE KEY" {
+			return nil, fmt.Errorf("invalid pem type key")
+		}
+		return HpkeKey(block.Bytes), nil
+	}
+
+	// Otherwise, we expect the key as a base64 blob
+	decode, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("base64 error: %v", err)
+	}
+
+	return HpkeKey(decode), nil
+}
+
+
+func (key *HpkeKey) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var raw string
+	err := unmarshal(&raw)
+	if err != nil {
+		return err
+	}
+
+	decode, err := HpkeKeyParse(raw)
+	if err != nil {
+		return nil
+	}
+	*key = decode
+	return nil
+}
 
 func hpkeIdString[T constraints.Integer](id T, dict map[T]string) string {
 	s, ok := dict[id]
@@ -56,7 +94,7 @@ func hpkeIdParse[T constraints.Integer](s string, dict map[T]string) (T, error) 
 var hpkeAeadStrings = map[hpke.AEAD]string{
 	hpke.AEAD_AES128GCM:        "AES128GCM",
 	hpke.AEAD_AES256GCM:        "AES256GCM",
-	hpke.AEAD_ChaCha20Poly1305: "CHAHA20POLY1035",
+	hpke.AEAD_ChaCha20Poly1305: "CHACHA20POLY1035",
 }
 
 func HpkeAeadString(aead hpke.AEAD) string {

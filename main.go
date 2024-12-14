@@ -31,9 +31,9 @@ import (
 type ListenConfig string
 
 type Configuration struct {
-	Listen    []ListenConfig         `yaml:"listen"`
-	ECHConfig []ECHConfig            `yaml:"ech"`
-	Routes    map[string]RouteConfig `yaml:"routes"`
+	Listen     []ListenConfig         `yaml:"listen"`
+	ECHConfigs ECHConfigList          `yaml:"ech"`
+	Routes     map[string]RouteConfig `yaml:"routes"`
 }
 
 type Server struct {
@@ -104,13 +104,15 @@ func (conf *Configuration) run() error {
 func main() {
 	var configFile string
 	var genHpkeKey string
+	var genEchSvcb bool
 
 	// Parse the configuration and command line options.
 	flag.StringVar(&configFile, "c", "", "Configuration file")
 	flag.StringVar(&genHpkeKey, "g", "", "Generate HPKE private key")
+	flag.BoolVar(&genEchSvcb, "s", false, "Generate ECH SVCB record")
 	flag.Parse()
 
-	// If we requested ECH key generation, generate the key and exit.
+	// If we requested HPKE key generation, generate the key and exit.
 	if len(genHpkeKey) != 0 {
 		err := RunHpkeGenerateKey(genHpkeKey)
 		if err != nil {
@@ -128,6 +130,25 @@ func main() {
 			log.Printf("error: %v", err)
 			os.Exit(1)
 		}
+	}
+
+	// Setup the ECH configuration
+	for index, _ := range conf.ECHConfigs {
+		err := conf.ECHConfigs[index].SetupPrivate()
+		if err != nil {
+			log.Printf("hpke key setup failed: %v", err)
+			os.Exit(1)
+		}
+	}
+
+	// If we requested ECH SVCB record generate, generate the record and exit.
+	if genEchSvcb {
+		err := RunEchGenerateSvcb(conf.ECHConfigs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "svcb generation failed: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 
 	// Run the service
