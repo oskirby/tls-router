@@ -71,22 +71,23 @@ func (kem *HpkeKem) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type ECHConfigContents struct {
-	ConfigId       uint8             `yaml:"config_id"`
-	KemId          HpkeKem           `yaml:"kem_id"`
-	PublicKey      HpkeKey           `yaml:"public_key,omitempty"`
-	CipherSuites   []HpkeCipherSuite `yaml:"cipher_suites"`
-	MaxNameLength  uint8             `yaml:"maximum_name_length,omitempty"`
-	PublicName     string            `yaml:"public_name"`
+	ConfigId      uint8             `yaml:"config_id"`
+	KemId         HpkeKem           `yaml:"kem_id"`
+	PublicKey     HpkeKey           `yaml:"public_key,omitempty"`
+	CipherSuites  []HpkeCipherSuite `yaml:"cipher_suites"`
+	MaxNameLength uint8             `yaml:"maximum_name_length,omitempty"`
+	PublicName    string            `yaml:"public_name"`
 
 	// For the server implementation
-	PrivateKey     HpkeKey           `yaml:"private_key,omitempty"`
-	PrivateKeyFile string            `yaml:"private_key_file,omitempty"`
+	PrivateKey     HpkeKey `yaml:"private_key,omitempty"`
+	PrivateKeyFile string  `yaml:"private_key_file,omitempty"`
+	echInfoString  []byte
 	hpkePrivateKey kem.PrivateKey
 }
 
 func (ech *ECHConfigContents) MarshalBinary() ([]byte, error) {
 	// Start with the HpkeKeyConfig
-	blob := make([]byte, 11 + len(ech.PublicKey) + 4 * len(ech.CipherSuites) + len(ech.PublicName))
+	blob := make([]byte, 11+len(ech.PublicKey)+4*len(ech.CipherSuites)+len(ech.PublicName))
 	blob[0] = ech.ConfigId
 	binary.BigEndian.PutUint16(blob[1:3], uint16(ech.KemId))
 
@@ -96,8 +97,8 @@ func (ech *ECHConfigContents) MarshalBinary() ([]byte, error) {
 	offset := 5 + len(ech.PublicKey)
 
 	// Cipher Suites
-	binary.BigEndian.PutUint16(blob[offset:offset+2], uint16(4 * len(ech.CipherSuites)))
-	offset += 2	
+	binary.BigEndian.PutUint16(blob[offset:offset+2], uint16(4*len(ech.CipherSuites)))
+	offset += 2
 	for _, cipher := range ech.CipherSuites {
 		binary.BigEndian.PutUint16(blob[offset:offset+2], uint16(cipher.KdfId))
 		binary.BigEndian.PutUint16(blob[offset+2:offset+4], uint16(cipher.AeadId))
@@ -124,17 +125,17 @@ func (contents *ECHConfigContents) UnmarshalBinary(data []byte) error {
 	contents.ConfigId = data[0]
 	contents.KemId = HpkeKem(binary.BigEndian.Uint16(data[1:3]))
 	pubkeyLen := int(binary.BigEndian.Uint16(data[3:5]))
-	if len(data) < 5 + pubkeyLen {
+	if len(data) < 5+pubkeyLen {
 		return fmt.Errorf("ech config pubkey truncated")
 	}
-	contents.PublicKey = HpkeKey(data[5:5+pubkeyLen])
+	contents.PublicKey = HpkeKey(data[5 : 5+pubkeyLen])
 
 	// Parse the cipher_suites list
 	offset := 5 + pubkeyLen
 	if len(data) < (offset + 2) {
 		return fmt.Errorf("ech config ciphers truncated")
 	}
-	ciphersLen := int(binary.BigEndian.Uint16(data[offset:offset+2]))
+	ciphersLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
 	offset += 2
 
 	ciphersEnd := offset + ciphersLen
@@ -142,13 +143,13 @@ func (contents *ECHConfigContents) UnmarshalBinary(data []byte) error {
 		return fmt.Errorf("ech ciphers truncated")
 	}
 	for offset < ciphersEnd {
-		if offset + 4 > ciphersEnd {
+		if offset+4 > ciphersEnd {
 			return fmt.Errorf("ech cipher truncated")
 		}
-		kdf := binary.BigEndian.Uint16(data[offset:offset+2])
-		aead := binary.BigEndian.Uint16(data[offset+2:offset+4])
+		kdf := binary.BigEndian.Uint16(data[offset : offset+2])
+		aead := binary.BigEndian.Uint16(data[offset+2 : offset+4])
 		contents.CipherSuites = append(contents.CipherSuites, HpkeCipherSuite{
-			KdfId: hpke.KDF(kdf),
+			KdfId:  hpke.KDF(kdf),
 			AeadId: hpke.AEAD(aead),
 		})
 		offset += 4
@@ -167,10 +168,10 @@ func (contents *ECHConfigContents) UnmarshalBinary(data []byte) error {
 	}
 	pubNameLength := int(data[offset])
 	offset++
-	if len(data) < offset + pubNameLength {
+	if len(data) < offset+pubNameLength {
 		return fmt.Errorf("ech public name truncated")
 	}
-	contents.PublicName = string(data[offset:offset+pubNameLength])
+	contents.PublicName = string(data[offset : offset+pubNameLength])
 
 	// TODO: Extensions
 	return nil
@@ -206,7 +207,7 @@ func (list *ECHConfigList) UnmarshalBinary(data []byte) error {
 		return fmt.Errorf("ech config list truncated")
 	}
 	totalLength := int(binary.BigEndian.Uint16(data[0:2]))
-	if (totalLength+2) > len(data) {
+	if (totalLength + 2) > len(data) {
 		return fmt.Errorf("ech config list overflow")
 	}
 
@@ -214,21 +215,21 @@ func (list *ECHConfigList) UnmarshalBinary(data []byte) error {
 	offset := 2
 	echEnd := offset + totalLength
 	for offset < echEnd {
-		if offset + 4 > echEnd {
+		if offset+4 > echEnd {
 			return fmt.Errorf("ech config truncated")
 		}
-		echVersion := binary.BigEndian.Uint16(data[offset:offset+2])
+		echVersion := binary.BigEndian.Uint16(data[offset : offset+2])
 		if echVersion != ECHVersion {
 			return fmt.Errorf("ech version 0x%04x not supported", echVersion)
 		}
-		echLength := int(binary.BigEndian.Uint16(data[offset+2:offset+4]))
+		echLength := int(binary.BigEndian.Uint16(data[offset+2 : offset+4]))
 		echNext := offset + 4 + echLength
-		if echNext > echEnd  {
+		if echNext > echEnd {
 			return fmt.Errorf("ech config truncated")
 		}
 
 		cfg := ECHConfigContents{}
-		err := cfg.UnmarshalBinary(data[offset+4:echNext])
+		err := cfg.UnmarshalBinary(data[offset+4 : echNext])
 		if err != nil {
 			return err
 		}

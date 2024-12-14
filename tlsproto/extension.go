@@ -43,6 +43,10 @@ const (
 )
 
 type Extension struct {
-	ExtType ExtensionType
-	ExtData []byte
+	ExtType   ExtensionType
+	ExtData   []byte
+
+	// When unmarshalled, the ExtOffset is the offset, in bytes, from the start
+	// of the payload handshake message.
+	ExtOffset int
 }

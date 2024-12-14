@@ -48,7 +48,6 @@ func HpkeKeyParse(s string) (HpkeKey, error) {
 	return HpkeKey(decode), nil
 }
 
-
 func (key *HpkeKey) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var raw string
 	err := unmarshal(&raw)

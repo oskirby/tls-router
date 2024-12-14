@@ -105,9 +105,10 @@ func (client *TlsConnection) processHandshake() error {
 	client.Versions = make([]tlsproto.ProtocolVersion, 1)
 	client.Versions[0] = hello.Version
 	client.CipherSuites = hello.CipherSuites
+	var echExtension *tlsproto.Extension = nil
 
 	// First pass: Parse for useful extensions
-	for _, ext := range hello.Extensions {
+	for index, ext := range hello.Extensions {
 		switch ext.ExtType {
 		case tlsproto.ExtTypeServerName:
 			err := client.processExtServerNames(&ext)
@@ -125,8 +126,17 @@ func (client *TlsConnection) processHandshake() error {
 				return err
 			}
 		case tlsproto.ExtTypeEncryptedClientHello:
-			// TODO: Handle ECH.
+			// Handle ECH decryption last.
+			echExtension = &hello.Extensions[index]
 			break
+		}
+	}
+
+	// If an ECH extension was found - process it.
+	if echExtension != nil {
+		err := client.processEncryptedHello(echExtension)
+		if err != nil {
+			return err
 		}
 	}
 

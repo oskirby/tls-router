@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"testing"
 
-	"golang.org/x/exp/constraints"
 	"github.com/cloudflare/circl/hpke"
+	"golang.org/x/exp/constraints"
 )
 
 func compareInteger[T constraints.Integer](result T, expect T) error {
@@ -45,15 +45,6 @@ func TestEchSvcbExample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("base64 decoding failed: %v", err)
 	}
-
-	// The expected values to parse.
-	//expectConfigId := uint8(1)
-	//expectKemId := hpke.KEM_X25519_HKDF_SHA256
-	//expectPubkey := 
-	//expectMaxName := 100
-	//expectCipherKdf := hpke.KDF_HKDF_SHA256
-	//expectCipherAead := hpke.AEAD_AES128GCM
-	//expectPubName := "ech-sitess.example.net"
 
 	// Parse the ECH config list.
 	list := ECHConfigList{}

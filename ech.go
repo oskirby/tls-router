@@ -17,10 +17,13 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/cloudflare/circl/hpke"
+	"github.com/oskirby/tls-router/tlsproto"
 )
 
 const ECHVersion uint16 = 0xfe0d
@@ -69,7 +72,122 @@ func (ech *ECHConfigContents) SetupPrivate() error {
 		}
 	}
 
+	// Prepare the echInfoString = "tls ech" || 0x00 || ECHConfig
+	blob, err := ech.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	ech.echInfoString = make([]byte, 12+len(blob))
+	copy(ech.echInfoString[0:7], []byte("tls ech"))
+	ech.echInfoString[7] = 0x00
+	binary.BigEndian.PutUint16(ech.echInfoString[8:10], ECHVersion)
+	binary.BigEndian.PutUint16(ech.echInfoString[10:12], uint16(len(blob)))
+	copy(ech.echInfoString[12:], blob)
+
 	return nil
+}
+
+func (client *TlsConnection) processEncryptedHello(ech *tlsproto.Extension) error {
+	// Parse the ECH outer extension
+	if len(ech.ExtData) == 0 {
+		return fmt.Errorf("ech malformed extension")
+	}
+	echType := ech.ExtData[0]
+	if echType != 0 {
+		return fmt.Errorf("ech malformed extension")
+	}
+	if len(ech.ExtData) < 8 {
+		return fmt.Errorf("ech malformed extension")
+	}
+	kdf := hpke.KDF(binary.BigEndian.Uint16(ech.ExtData[1:3]))
+	aead := hpke.AEAD(binary.BigEndian.Uint16(ech.ExtData[3:5]))
+	configId := ech.ExtData[5]
+	keyLen := int(binary.BigEndian.Uint16(ech.ExtData[6:8]))
+	offset := 8
+
+	if len(ech.ExtData) < offset+keyLen+2 {
+		return fmt.Errorf("ech malformed extension")
+	}
+	encKey := ech.ExtData[offset : offset+keyLen]
+	offset += keyLen
+
+	payloadLen := int(binary.BigEndian.Uint16(ech.ExtData[offset : offset+2]))
+	offset += 2
+	if len(ech.ExtData) < offset+payloadLen {
+		return fmt.Errorf("ech malformed extension")
+	}
+	payloadData := ech.ExtData[offset : offset+payloadLen]
+	payloadOffset := ech.ExtOffset + offset
+
+	// Lookup the corresponding ECH configuration
+	var echConfig *ECHConfigContents = nil
+	for index, config := range client.config.ECHConfigs {
+		if config.ConfigId == configId {
+			echConfig = &client.config.ECHConfigs[index]
+			break
+		}
+	}
+	if echConfig == nil {
+		return fmt.Errorf("ech config %d not found", configId)
+	}
+
+	// Setup the HPKE opener.
+	if !kdf.IsValid() {
+		return fmt.Errorf("ech invalid kdf")
+	}
+	if !aead.IsValid() {
+		return fmt.Errorf("ech invalid aead")
+	}
+	suite := hpke.NewSuite(hpke.KEM(echConfig.KemId), kdf, aead)
+	receiver, err := suite.NewReceiver(echConfig.hpkePrivateKey, echConfig.echInfoString)
+	if err != nil {
+		return fmt.Errorf("ech receiver failed: %v", err)
+	}
+	opener, err := receiver.Setup(encKey)
+	if err != nil {
+		return fmt.Errorf("ech setup failed: %v", err)
+	}
+
+	// Compute ClientHelloOuterAAD by copying the handshake message and setting
+	// payload field of the ECH extension to zeros.
+	aad := make([]byte, len(client.recordData)-4)
+	copy(aad, client.recordData[4:])
+	for i := 0; i < payloadLen; i++ {
+		aad[payloadOffset+i] = 0
+	}
+
+	// Decrypt the encrypted EncodedClientHelloInner
+	decrypt, err := opener.Open(payloadData, aad)
+	if err != nil {
+		return fmt.Errorf("ech decrypt failed: %v", err)
+	}
+
+	// Parse the inner ClientHello
+	echInner := tlsproto.ClientHello{}
+	err = echInner.Unmarshal(decrypt)
+	if err != nil {
+		return fmt.Errorf("ech parse error: %v", err)
+	}
+
+	// DEBUG!
+	log.Printf("TLS ClientHelloInner Received")
+	log.Printf("  Version: %s", echInner.Version.String())
+	log.Printf("  Random: %s", base64.StdEncoding.EncodeToString(echInner.Random[:]))
+	log.Printf("  Session ID: %s", base64.StdEncoding.EncodeToString(echInner.SessionId))
+	log.Printf("  Ciphers:")
+	for _, suite := range echInner.CipherSuites {
+		log.Printf("    %s", suite.String())
+	}
+	log.Printf("  Compression:")
+	for _, method := range echInner.CompressionMethods {
+		log.Printf("    0x%02x", method)
+	}
+	log.Printf("  Extensions:")
+	for _, ext := range echInner.Extensions {
+		log.Printf("    0x%04x", ext.ExtType)
+	}
+
+	return fmt.Errorf("not finished")
 }
 
 func RunEchGenerateSvcb(list ECHConfigList) error {
