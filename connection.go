@@ -111,20 +111,23 @@ func (client *TlsConnection) processHandshake() error {
 	for index, ext := range hello.Extensions {
 		switch ext.ExtType {
 		case tlsproto.ExtTypeServerName:
-			err := client.processExtServerNames(&ext)
+			sni, err := ext.ParseServerName()
 			if err != nil {
 				return err
 			}
+			client.ServerNames = sni.ServerNames
 		case tlsproto.ExtTypeAlpn:
-			err := client.processExtAlpnProtocls(&ext)
+			alpn, err := ext.ParseAlpnProtocols()
 			if err != nil {
 				return err
 			}
+			client.AlpnProtocols = alpn.AlpnProtocols
 		case tlsproto.ExtTypeSupportedVersions:
-			err := client.processExtSupportedVersions(&ext)
+			versions, err := ext.ParseSupportedVersions()
 			if err != nil {
 				return err
 			}
+			client.Versions = versions.Versions
 		case tlsproto.ExtTypeEncryptedClientHello:
 			// Handle ECH decryption last.
 			echExtension = &hello.Extensions[index]
@@ -171,80 +174,6 @@ func (client *TlsConnection) processHandshake() error {
 	}
 
 	// TODO:
-	return nil
-}
-
-func (client *TlsConnection) processExtServerNames(ext *tlsproto.Extension) error {
-	if len(ext.ExtData) < 2 {
-		return fmt.Errorf("malformed sni")
-	}
-	sniLength := int(binary.BigEndian.Uint16(ext.ExtData[0:2]))
-	sniEnd := 2 + sniLength
-	if len(ext.ExtData) < sniEnd {
-		return fmt.Errorf("malformed sni")
-	}
-	offset := 2
-
-	for offset < sniEnd {
-		sniType := ext.ExtData[offset]
-		if sniType != 0 {
-			return fmt.Errorf("unsupported sni type")
-		}
-		if (offset + 3) > sniEnd {
-			return fmt.Errorf("malformed sni")
-		}
-		sniNameLen := int(binary.BigEndian.Uint16(ext.ExtData[offset+1 : offset+3]))
-		sniNext := offset + 3 + sniNameLen
-		if sniNext > sniEnd {
-			return fmt.Errorf("malformed sni")
-		}
-		client.ServerNames = append(client.ServerNames, string(ext.ExtData[offset+3:sniNext]))
-		offset = sniNext
-	}
-
-	return nil
-}
-
-func (client *TlsConnection) processExtAlpnProtocls(ext *tlsproto.Extension) error {
-	if len(ext.ExtData) < 2 {
-		return fmt.Errorf("malformed alpn")
-	}
-	alpnLength := int(binary.BigEndian.Uint16(ext.ExtData[0:2]))
-	alpnEnd := 2 + alpnLength
-	if len(ext.ExtData) < alpnEnd {
-		return fmt.Errorf("malformed alpn")
-	}
-	offset := 2
-
-	for offset < alpnEnd {
-		nameLen := int(ext.ExtData[offset])
-		alpnNext := offset + 1 + nameLen
-		if alpnNext > alpnEnd {
-			return fmt.Errorf("malformed alpn")
-		}
-		client.AlpnProtocols = append(client.AlpnProtocols, string(ext.ExtData[offset+1:alpnNext]))
-		offset = alpnNext
-	}
-
-	return nil
-}
-
-func (client *TlsConnection) processExtSupportedVersions(ext *tlsproto.Extension) error {
-	client.Versions = nil
-
-	if len(ext.ExtData) == 0 {
-		return fmt.Errorf("malformed alpn")
-	}
-	vLength := int(ext.ExtData[0])
-	if len(ext.ExtData) < vLength+1 {
-		return fmt.Errorf("malformed versions")
-	}
-	vEnd := 1 + vLength
-	for offset := 1; offset+2 <= vEnd; offset += 2 {
-		version := binary.BigEndian.Uint16(ext.ExtData[offset : offset+2])
-		client.Versions = append(client.Versions, tlsproto.ProtocolVersion(version))
-	}
-
 	return nil
 }
 

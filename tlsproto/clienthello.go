@@ -98,9 +98,8 @@ func (hello *ClientHello) Unmarshal(data []byte) error {
 			break
 		}
 		hello.Extensions = append(hello.Extensions, Extension{
-			ExtType:   ExtensionType(extType),
-			ExtData:   data[offset+4 : extNext],
-			ExtOffset: offset+4,
+			ExtType: ExtensionType(extType),
+			ExtData: data[offset+4 : extNext],
 		})
 		offset = extNext
 	}

@@ -87,54 +87,30 @@ func (ech *ECHConfigContents) SetupPrivate() error {
 	return nil
 }
 
-func (client *TlsConnection) processEncryptedHello(ech *tlsproto.Extension) error {
-	// Parse the ECH outer extension
-	if len(ech.ExtData) == 0 {
-		return fmt.Errorf("ech malformed extension")
+func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) error {
+	ech, err := ext.ParseEncryptedClientHello()
+	if err != nil {
+		return err
 	}
-	echType := ech.ExtData[0]
-	if echType != 0 {
-		return fmt.Errorf("ech malformed extension")
-	}
-	if len(ech.ExtData) < 8 {
-		return fmt.Errorf("ech malformed extension")
-	}
-	kdf := hpke.KDF(binary.BigEndian.Uint16(ech.ExtData[1:3]))
-	aead := hpke.AEAD(binary.BigEndian.Uint16(ech.ExtData[3:5]))
-	configId := ech.ExtData[5]
-	keyLen := int(binary.BigEndian.Uint16(ech.ExtData[6:8]))
-	offset := 8
-
-	if len(ech.ExtData) < offset+keyLen+2 {
-		return fmt.Errorf("ech malformed extension")
-	}
-	encKey := ech.ExtData[offset : offset+keyLen]
-	offset += keyLen
-
-	payloadLen := int(binary.BigEndian.Uint16(ech.ExtData[offset : offset+2]))
-	offset += 2
-	if len(ech.ExtData) < offset+payloadLen {
-		return fmt.Errorf("ech malformed extension")
-	}
-	payloadData := ech.ExtData[offset : offset+payloadLen]
-	payloadOffset := ech.ExtOffset + offset
 
 	// Lookup the corresponding ECH configuration
 	var echConfig *ECHConfigContents = nil
 	for index, config := range client.config.ECHConfigs {
-		if config.ConfigId == configId {
+		if config.ConfigId == ech.ConfigId {
 			echConfig = &client.config.ECHConfigs[index]
 			break
 		}
 	}
 	if echConfig == nil {
-		return fmt.Errorf("ech config %d not found", configId)
+		return fmt.Errorf("ech config %d not found", ech.ConfigId)
 	}
 
 	// Setup the HPKE opener.
+	kdf := hpke.KDF(ech.CipherKdf)
 	if !kdf.IsValid() {
 		return fmt.Errorf("ech invalid kdf")
 	}
+	aead := hpke.AEAD(ech.CipherAead)
 	if !aead.IsValid() {
 		return fmt.Errorf("ech invalid aead")
 	}
@@ -143,21 +119,22 @@ func (client *TlsConnection) processEncryptedHello(ech *tlsproto.Extension) erro
 	if err != nil {
 		return fmt.Errorf("ech receiver failed: %v", err)
 	}
-	opener, err := receiver.Setup(encKey)
+	opener, err := receiver.Setup(ech.Enc)
 	if err != nil {
 		return fmt.Errorf("ech setup failed: %v", err)
 	}
 
-	// Compute ClientHelloOuterAAD by copying the handshake message and setting
-	// payload field of the ECH extension to zeros.
-	aad := make([]byte, len(client.recordData)-4)
-	copy(aad, client.recordData[4:])
-	for i := 0; i < payloadLen; i++ {
-		aad[payloadOffset+i] = 0
+	// Make a copy of the payload and then zero the original to produce the
+	// ClientHelloOuterAAD. Note that this only works because the extension
+	// parsing is zero-copy.
+	payload := make([]byte, len(ech.Payload))
+	copy(payload, ech.Payload)
+	for i := 0; i < len(ech.Payload); i++ {
+		ech.Payload[i] = 0
 	}
 
 	// Decrypt the encrypted EncodedClientHelloInner
-	decrypt, err := opener.Open(payloadData, aad)
+	decrypt, err := opener.Open(payload, client.recordData[4:])
 	if err != nil {
 		return fmt.Errorf("ech decrypt failed: %v", err)
 	}
