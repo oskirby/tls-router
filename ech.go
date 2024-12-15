@@ -92,6 +92,9 @@ func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) erro
 	if err != nil {
 		return err
 	}
+	if ech.Type != tlsproto.ECHClientHelloOuter {
+		return fmt.Errorf("malformed ech outer extension")
+	}
 
 	// Lookup the corresponding ECH configuration
 	var echConfig *ECHConfigContents = nil
@@ -133,38 +136,95 @@ func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) erro
 		ech.Payload[i] = 0
 	}
 
+	outerSessionId := client.ClientHello.SessionId
+
+	// Make a copy of the outer extensions, as we will need them to expand
+	// the any compressed extensions in the inner client hello.
+	outerExts := make([]tlsproto.Extension, len(client.ClientHello.Extensions))
+	for index, oex := range client.ClientHello.Extensions {
+		outerExts[index] = oex
+	}
+
 	// Decrypt the encrypted EncodedClientHelloInner
-	decrypt, err := opener.Open(payload, client.recordData[4:])
+	decrypt, err := opener.Open(payload, client.helloData)
 	if err != nil {
 		return fmt.Errorf("ech decrypt failed: %v", err)
 	}
 
+	log.Printf("DEBUG: decrypt=%s", base64.StdEncoding.EncodeToString(decrypt))
+
 	// Parse the inner ClientHello
-	echInner := tlsproto.ClientHello{}
-	err = echInner.Unmarshal(decrypt)
+	err = client.ClientHello.Unmarshal(decrypt)
 	if err != nil {
 		return fmt.Errorf("ech parse error: %v", err)
 	}
 
-	// DEBUG!
-	log.Printf("TLS ClientHelloInner Received")
-	log.Printf("  Version: %s", echInner.Version.String())
-	log.Printf("  Random: %s", base64.StdEncoding.EncodeToString(echInner.Random[:]))
-	log.Printf("  Session ID: %s", base64.StdEncoding.EncodeToString(echInner.SessionId))
-	log.Printf("  Ciphers:")
-	for _, suite := range echInner.CipherSuites {
-		log.Printf("    %s", suite.String())
-	}
-	log.Printf("  Compression:")
-	for _, method := range echInner.CompressionMethods {
-		log.Printf("    0x%02x", method)
-	}
-	log.Printf("  Extensions:")
-	for _, ext := range echInner.Extensions {
-		log.Printf("    0x%04x", ext.ExtType)
+	// Restore the session ID from the outer client hello.
+	client.ClientHello.SessionId = outerSessionId
+
+	// Expand compressed extensions by copying them from the echOuter
+	for i := 0; i < len(client.ClientHello.Extensions); i++ {
+		ext := client.ClientHello.Extensions[i]
+		switch ext.ExtType {
+		case tlsproto.ExtTypeEchOuterExtensions:
+			value, err := ext.ParseEchOuterExtensions()
+			if err != nil {
+				return err
+			}
+			// Expand the outer extensions and splice the extensions back together.
+			expanded, err := expandEchOuterExt(value.OuterExtensions, outerExts)
+			if err != nil {
+				return err
+			}
+			remainder := client.ClientHello.Extensions[i+1:]
+			client.ClientHello.Extensions = append(client.ClientHello.Extensions[:i], expanded...)
+			client.ClientHello.Extensions = append(client.ClientHello.Extensions, remainder...)
+			i += len(expanded) - 1
+
+		case tlsproto.ExtTypeEncryptedClientHello:
+			value, err := ext.ParseEncryptedClientHello()
+			if err != nil {
+				return err
+			}
+			if value.Type != tlsproto.ECHClientHelloInner {
+				return fmt.Errorf("malformed ech inner extension")
+			}
+		default:
+			break
+		}
 	}
 
-	return fmt.Errorf("not finished")
+	// Reconstruct the ClientHelloInner
+	blob, err := client.ClientHello.Marshal()
+	if err != nil {
+		return err
+	}
+	client.helloData = blob
+
+	return nil
+}
+
+func expandEchOuterExt(extTypes []tlsproto.ExtensionType, outer []tlsproto.Extension) ([]tlsproto.Extension, error) {
+	oidx := 0
+	results := []tlsproto.Extension{}
+	for _, etype := range extTypes {
+		found := false
+		for oidx < len(outer) {
+			if outer[oidx].ExtType != etype {
+				oidx++
+				continue
+			}
+			results = append(results, outer[oidx])
+			found = true
+			oidx++
+			break
+		}
+		if !found {
+			return nil, fmt.Errorf("ech extension expansion failed")
+		}
+	}
+
+	return results, nil
 }
 
 func RunEchGenerateSvcb(list ECHConfigList) error {

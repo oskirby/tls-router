@@ -79,8 +79,13 @@ func (hello *ClientHello) Unmarshal(data []byte) error {
 	copy(hello.CompressionMethods, data[offset:offset+compressionLength])
 	offset += compressionLength
 
+	// For SSL3.0 and below, there are no extensions and we can stop here.
+	hello.Extensions = nil
+	if hello.Version <= VersionSsl30 {
+		return nil
+	}
+
 	// Parse the extensions
-	// TODO: Support SSL3.0 by assuming an empty extension list.
 	if len(data) < offset+2 {
 		return fmt.Errorf("client hello truncated")
 	}
@@ -105,4 +110,72 @@ func (hello *ClientHello) Unmarshal(data []byte) error {
 	}
 
 	return nil
+}
+
+func (hello *ClientHello) Marshal() ([]byte, error) {
+	msgLength := 34
+	msgLength += 1 + len(hello.SessionId)
+	msgLength += 2 + 2*len(hello.CipherSuites)
+	msgLength += 1 + len(hello.CompressionMethods)
+
+	// And the extensions
+	extLength := 0
+	if hello.Version > VersionTls10 {
+		msgLength += 2
+		for _, ext := range hello.Extensions {
+			extLength += 4 + len(ext.ExtData)
+		}
+	}
+
+	data := make([]byte, msgLength+extLength)
+	binary.BigEndian.PutUint16(data[0:2], uint16(hello.Version))
+	copy(data[2:34], hello.Random[:])
+
+	// Encode the session ID
+	if len(hello.SessionId) > 255 {
+		return nil, fmt.Errorf("session id overflow")
+	}
+	data[34] = uint8(len(hello.SessionId))
+	copy(data[35:35+len(hello.SessionId)], hello.SessionId)
+	offset := 35 + len(hello.SessionId)
+
+	// Encode the cipher suites.
+	binary.BigEndian.PutUint16(data[offset:offset+2], uint16(2*len(hello.CipherSuites)))
+	offset += 2
+	for _, cipher := range hello.CipherSuites {
+		binary.BigEndian.PutUint16(data[offset:offset+2], uint16(cipher))
+		offset += 2
+	}
+
+	// Encode the compression methods.
+	if len(hello.CompressionMethods) > 255 {
+		return nil, fmt.Errorf("compression methods overflow")
+	}
+	data[offset] = uint8(len(hello.CompressionMethods))
+	offset++
+	copy(data[offset:offset+len(hello.CompressionMethods)], hello.CompressionMethods)
+	offset += len(hello.CompressionMethods)
+
+	// Extensions are only supported for TLS1.0 and beyond.
+	if hello.Version <= VersionSsl30 {
+		return data, nil
+	}
+
+	// Encode the extensions
+	if extLength > 0xffff {
+		return nil, fmt.Errorf("extension overflow")
+	}
+	binary.BigEndian.PutUint16(data[offset:offset+2], uint16(extLength))
+	offset += 2
+	for _, ext := range hello.Extensions {
+		if len(ext.ExtData) > 0xffff {
+			return nil, fmt.Errorf("extension overflow")
+		}
+		binary.BigEndian.PutUint16(data[offset:offset+2], uint16(ext.ExtType))
+		binary.BigEndian.PutUint16(data[offset+2:offset+4], uint16(len(ext.ExtData)))
+		copy(data[offset+4:offset+4+len(ext.ExtData)], ext.ExtData)
+		offset += 4 + len(ext.ExtData)
+	}
+
+	return data, nil
 }

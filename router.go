@@ -149,7 +149,7 @@ func (route *RouteConfig) MatchesConnection(client *TlsConnection) bool {
 		}
 	}
 
-	for _, suite := range client.CipherSuites {
+	for _, suite := range client.ClientHello.CipherSuites {
 		if route.Ciphers.MatchString(suite.String()) {
 			return true
 		}

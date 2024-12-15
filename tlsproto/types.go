@@ -55,7 +55,7 @@ type RecordHeader struct {
 	Length      uint16
 }
 
-const RecordMaxLength = uint16(1 << 14)
+const RecordMaxLength int = 1 << 14
 
 type HandshakeType uint8
 
