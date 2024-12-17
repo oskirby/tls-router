@@ -37,7 +37,7 @@ Next, we must configure our DNS records to include the `ech` parameter in an
 follows:
 ```
 user@example.com:~$ ./tls-router -c example.yaml -s
-ech=AEv+DQBHAAAgACCrVhhlN1kc1CapEP/hcTNXrKl+LOzN3ZufjIapPCVMMQAMAAEAAQACAAIAAQADABBlY2gubWFuYXdvbGYubmV0AAA=
+ech=AEb+DQBCAAAgACDrQ8oK9hyIktFIfT6WRrJSoNHloohHqZr+PnvNK5hUcwAMAAEAAQACAAIAAQADAAtleGFtcGxlLmNvbQAA
 ```
 
 # Configuration
@@ -54,7 +54,7 @@ An example configuration file might look as follows:
 
 ```
 listen:
-  - :443
+  - :8443
 
 routes:
   main-page:
@@ -63,9 +63,9 @@ routes:
   static-content:
     sni: static.example.com
     targets:
-      - address: 192.168.1.111:8443
+      - address: 192.168.1.111:443
         weight: 100
-      - address: 192.168.1.222:8443
+      - address: 192.168.1.222:443
         weight: 10
   acme-responder:
     alpn: acme-tls/1

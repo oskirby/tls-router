@@ -1,21 +1,28 @@
 listen:
-  - :8443
+  - :443
+
 routes:
-  root.manawolf.net:
-    sni: root.manawolf.net
-    targets: [192.168.1.8:8443]
-  thorium.manawolf.net:
-    sni: thorium.manawolf.net
-    targets: [192.168.1.16:8006]
-  default:
+  main-page:
+    sni: www.example.com
+    targets: [ 192.168.1.123:8443 ]
+  static-content:
+    sni: static.example.com
+    targets:
+      - address: 192.168.1.111:8443
+        weight: 100
+      - address: 192.168.1.222:8443
+        weight: 10
+  acme-responder:
     alpn: acme-tls/1
-    targets: [192.168.1.8:10443]
+    targets:
+      - 192.168.1.42:10443
+
 ech:
   - config_id: 0
     kem_id: x25519-hkdf-sha256
-    private_key: 2J8FFrdyQo0Pv/a2HbpQrtW3VHmILOl38OpHBOGMzZk=
     cipher_suites:
       - hkdf-sha256,aes128gcm
       - hkdf-sha384,aes256gcm
       - hkdf-sha256,chacha20poly1035
-    public_name: ech.manawolf.net
+    public_name: example.com
+    private_key: Qs4r1UBZp+oSh1cEQ1UgZ5Gk6pJFBmrZSIdntskcnbc=
