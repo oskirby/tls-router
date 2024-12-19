@@ -177,11 +177,11 @@ func (server *Server) ResolveRoutes() {
 }
 
 func (server *Server) runConnection(conn *net.TCPConn, ctx context.Context) {
-	client := &TlsConnection{
-		conn:   conn,
+	tcon := &TlsConnection{
+		client: conn,
 		config: &server.conf,
 	}
-	defer conn.Close()
+	defer tcon.Close()
 
 	// Create a context for the connection handshake. If we don't get a complete
 	// ClientHello within its timeout, then we should give up and close the
@@ -192,12 +192,12 @@ func (server *Server) runConnection(conn *net.TCPConn, ctx context.Context) {
 		<-hsCtx.Done()
 		if !errors.Is(hsCtx.Err(), context.Canceled) {
 			log.Printf("handshake error: %v", hsCtx.Err())
-			client.conn.Close()
+			tcon.client.Close()
 		}
 	}()
 
 	// Process the handshake and get the ClientHello
-	err := client.handleRequest(ctx)
+	err := tcon.handleRequest(ctx)
 	if err != nil {
 		log.Printf("request error: %v", err)
 		return
@@ -206,7 +206,7 @@ func (server *Server) runConnection(conn *net.TCPConn, ctx context.Context) {
 
 	// Check if the client matches a route.
 	for _, route := range server.conf.Routes {
-		if !route.MatchesConnection(client) {
+		if !route.MatchesConnection(tcon) {
 			continue
 		}
 
@@ -216,8 +216,8 @@ func (server *Server) runConnection(conn *net.TCPConn, ctx context.Context) {
 		if err != nil {
 			return
 		}
-		defer backend.Close()
-		err = client.resendHandshake(backend)
+		tcon.backend = backend
+		err = tcon.resendClientHello()
 		if err != nil {
 			return
 		}
@@ -227,14 +227,14 @@ func (server *Server) runConnection(conn *net.TCPConn, ctx context.Context) {
 		defer wg.Wait()
 		wg.Add(1)
 		go func() {
-			_, err := io.Copy(backend, client.conn)
+			err := tcon.handleResponses()
 			if err != nil {
 				log.Printf("backend error: %v", err)
 			}
 			wg.Done()
 		}()
 
-		_, err = io.Copy(client.conn, backend)
+		_, err = io.Copy(tcon.backend, tcon.client)
 		if err != nil {
 			log.Printf("pipe error: %v", err)
 		}

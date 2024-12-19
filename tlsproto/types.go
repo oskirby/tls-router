@@ -29,13 +29,13 @@ const (
 	VersionSsl30 = ProtocolVersion(0x0300)
 )
 
-func (v *ProtocolVersion) String() string {
-	if *v <= VersionSsl30 {
-		return fmt.Sprintf("SSL%d.%d", (*v >> 8), *v&0xff)
-	} else if (*v >> 8) == 0x03 {
-		return fmt.Sprintf("TLS1.%d", (*v&0xff)-1)
+func (v ProtocolVersion) String() string {
+	if v <= VersionSsl30 {
+		return fmt.Sprintf("SSL%d.%d", (v >> 8), v&0xff)
+	} else if (v >> 8) == 0x03 {
+		return fmt.Sprintf("TLS1.%d", (v&0xff)-1)
 	} else {
-		return fmt.Sprintf("Unknown(0x%04x)", *v)
+		return fmt.Sprintf("Unknown(0x%04x)", v)
 	}
 }
 

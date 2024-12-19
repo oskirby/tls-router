@@ -51,6 +51,9 @@ const (
 type Extension struct {
 	ExtType ExtensionType
 	ExtData []byte
+
+	// The message type in which this extension was parsed.
+	ExtContext HandshakeType
 }
 
 type ExtServerName struct {
@@ -131,13 +134,13 @@ func (ext *Extension) ParseSupportedVersions() (*ExtSupportedVersions, error) {
 	versions := ExtSupportedVersions{Extension: *ext}
 
 	if len(ext.ExtData) == 0 {
-		return nil, fmt.Errorf("malformed alpn")
-	}
-	vLength := int(ext.ExtData[0])
-	if len(ext.ExtData) < vLength+1 {
 		return nil, fmt.Errorf("malformed versions")
 	}
-	vEnd := 1 + vLength
+	vLength := int(ext.ExtData[0])
+	vEnd := vLength + 1
+	if vEnd > len(ext.ExtData) {
+		return nil, fmt.Errorf("malformed versions")
+	}
 	for offset := 1; offset+2 <= vEnd; offset += 2 {
 		value := binary.BigEndian.Uint16(ext.ExtData[offset : offset+2])
 		versions.Versions = append(versions.Versions, ProtocolVersion(value))

@@ -19,7 +19,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/cloudflare/circl/hpke"
@@ -150,8 +149,6 @@ func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) erro
 	if err != nil {
 		return fmt.Errorf("ech decrypt failed: %v", err)
 	}
-
-	log.Printf("DEBUG: decrypt=%s", base64.StdEncoding.EncodeToString(decrypt))
 
 	// Parse the inner ClientHello
 	err = client.ClientHello.Unmarshal(decrypt)

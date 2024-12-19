@@ -103,8 +103,9 @@ func (hello *ClientHello) Unmarshal(data []byte) error {
 			break
 		}
 		hello.Extensions = append(hello.Extensions, Extension{
-			ExtType: ExtensionType(extType),
-			ExtData: data[offset+4 : extNext],
+			ExtType:    ExtensionType(extType),
+			ExtData:    data[offset+4 : extNext],
+			ExtContext: HandshakeTypeClientHello,
 		})
 		offset = extNext
 	}
