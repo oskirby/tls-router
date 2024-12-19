@@ -34,6 +34,9 @@ type Configuration struct {
 	Listen     []ListenConfig         `yaml:"listen"`
 	ECHConfigs ECHConfigList          `yaml:"ech"`
 	Routes     map[string]RouteConfig `yaml:"routes"`
+
+	// verbose logging can only be enabled from the command line.
+	verbose    bool
 }
 
 type Server struct {
@@ -102,14 +105,18 @@ func (conf *Configuration) run() error {
 }
 
 func main() {
-	var configFile string
-	var genHpkeKey string
-	var genEchSvcb bool
+	var (
+		conf Configuration
+		configFile string
+		genHpkeKey string
+		genEchSvcb bool
+	)
 
 	// Parse the configuration and command line options.
 	flag.StringVar(&configFile, "c", "", "Configuration file")
 	flag.StringVar(&genHpkeKey, "g", "", "Generate HPKE private key")
 	flag.BoolVar(&genEchSvcb, "s", false, "Generate ECH SVCB record")
+	flag.BoolVar(&conf.verbose, "v", false, "Verbose logging")
 	flag.Parse()
 
 	// If we requested HPKE key generation, generate the key and exit.
@@ -123,7 +130,6 @@ func main() {
 	}
 
 	// Parse the configuration file.
-	var conf Configuration
 	if len(configFile) > 0 {
 		err := conf.LoadFromFile(configFile)
 		if err != nil {

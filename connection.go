@@ -278,8 +278,6 @@ func (tcon *TlsConnection) handleInbound() error {
 		}
 	}
 
-	log.Printf("full send inbound")
-
 	// Once the server hello has been received, we can begin proxying records
 	// without needing to do any parsing.
 	_, err := io.Copy(tcon.backend, tcon.client)
@@ -331,16 +329,18 @@ func (tcon *TlsConnection) handleOutbound() error {
 		// find that the server doesn't support it, we should probably complain
 		// loudly - since we already know this connection is going to fail.
 
-		// DEBUG!
-		log.Printf("TLS Server Hello Received")
-		log.Printf("  Version: %s", hello.GetVersion().String())
-		log.Printf("  Random: %s", base64.StdEncoding.EncodeToString(hello.Random[:]))
-		log.Printf("  Session ID: %s", base64.StdEncoding.EncodeToString(hello.SessionId))
-		log.Printf("  Cipher: %s", hello.CipherSuite.String())
-		log.Printf("  Compression: 0x%02x", hello.CompressionMethod)
-		log.Printf("  Extensions:")
-		for _, ext := range hello.Extensions {
-			log.Printf("    0x%04x", ext.ExtType)
+		// Log the connection, if verbose logging is enabled.
+		if tcon.config.verbose {
+			log.Printf("TLS Server Hello Received")
+			log.Printf("  Version: %s", hello.GetVersion().String())
+			log.Printf("  Random: %s", base64.StdEncoding.EncodeToString(hello.Random[:]))
+			log.Printf("  Session ID: %s", base64.StdEncoding.EncodeToString(hello.SessionId))
+			log.Printf("  Cipher: %s", hello.CipherSuite.String())
+			log.Printf("  Compression: 0x%02x", hello.CompressionMethod)
+			log.Printf("  Extensions:")
+			for _, ext := range hello.Extensions {
+				log.Printf("    0x%04x", ext.ExtType)
+			}
 		}
 
 		// Check for a TLS1.3 Hello Retry Request, otherwise the connection can
@@ -354,8 +354,6 @@ func (tcon *TlsConnection) handleOutbound() error {
 			break
 		}
 	}
-
-	log.Printf("full send outbound")
 
 	// Once the server hello has been received, we can begin proxying records
 	// without needing to do any parsing.
@@ -409,33 +407,35 @@ func (tcon *TlsConnection) processClientHello() error {
 	}
 
 	// DEBUG!
-	log.Printf("TLS ClientHello Received")
-	log.Printf("  Version: %s", tcon.ClientHello.Version.String())
-	log.Printf("  Random: %s", base64.StdEncoding.EncodeToString(tcon.ClientHello.Random[:]))
-	log.Printf("  Session ID: %s", base64.StdEncoding.EncodeToString(tcon.ClientHello.SessionId))
-	log.Printf("  Ciphers:")
-	for _, suite := range tcon.ClientHello.CipherSuites {
-		log.Printf("    %s", suite.String())
-	}
-	log.Printf("  Compression:")
-	for _, method := range tcon.ClientHello.CompressionMethods {
-		log.Printf("    0x%02x", method)
-	}
-	log.Printf("  Extensions:")
-	for _, ext := range tcon.ClientHello.Extensions {
-		log.Printf("    0x%04x", ext.ExtType)
-	}
-	log.Printf("  Server Names:")
-	for _, name := range tcon.ServerNames {
-		log.Printf("    %s", name)
-	}
-	log.Printf("  Application Protocols:")
-	for _, protocol := range tcon.AlpnProtocols {
-		log.Printf("    %s", protocol)
-	}
-	log.Printf("  Supported Versions:")
-	for _, version := range tcon.Versions {
-		log.Printf("    %s", version.String())
+	if tcon.config.verbose {
+		log.Printf("TLS ClientHello Received")
+		log.Printf("  Version: %s", tcon.ClientHello.Version.String())
+		log.Printf("  Random: %s", base64.StdEncoding.EncodeToString(tcon.ClientHello.Random[:]))
+		log.Printf("  Session ID: %s", base64.StdEncoding.EncodeToString(tcon.ClientHello.SessionId))
+		log.Printf("  Ciphers:")
+		for _, suite := range tcon.ClientHello.CipherSuites {
+			log.Printf("    %s", suite.String())
+		}
+		log.Printf("  Compression:")
+		for _, method := range tcon.ClientHello.CompressionMethods {
+			log.Printf("    0x%02x", method)
+		}
+		log.Printf("  Extensions:")
+		for _, ext := range tcon.ClientHello.Extensions {
+			log.Printf("    0x%04x", ext.ExtType)
+		}
+		log.Printf("  Server Names:")
+		for _, name := range tcon.ServerNames {
+			log.Printf("    %s", name)
+		}
+		log.Printf("  Application Protocols:")
+		for _, protocol := range tcon.AlpnProtocols {
+			log.Printf("    %s", protocol)
+		}
+		log.Printf("  Supported Versions:")
+		for _, version := range tcon.Versions {
+			log.Printf("    %s", version.String())
+		}
 	}
 
 	// Success - it's now up to the router to handle this message.
