@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"regexp"
@@ -217,7 +216,7 @@ func (server *Server) runConnection(conn *net.TCPConn, ctx context.Context) {
 			return
 		}
 		tcon.backend = backend
-		err = tcon.resendClientHello()
+		err = sendClientHello(tcon.backend, tcon.helloData)
 		if err != nil {
 			return
 		}
@@ -227,17 +226,18 @@ func (server *Server) runConnection(conn *net.TCPConn, ctx context.Context) {
 		defer wg.Wait()
 		wg.Add(1)
 		go func() {
-			err := tcon.handleResponses()
+			err := tcon.handleOutbound()
 			if err != nil {
 				log.Printf("backend error: %v", err)
 			}
 			wg.Done()
 		}()
 
-		_, err = io.Copy(tcon.backend, tcon.client)
+		err = tcon.handleInbound()
 		if err != nil {
 			log.Printf("pipe error: %v", err)
 		}
+		return
 	}
 
 	// If we get this far, there is nowhere to route the connection to.

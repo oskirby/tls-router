@@ -39,9 +39,13 @@ type TlsConnection struct {
 	AlpnProtocols []string
 
 	// Data read from the connnection.
-	recordVersion tlsproto.ProtocolVersion
-	helloData     []byte
-	helloDone     bool
+	recordVersion   tlsproto.ProtocolVersion
+	helloData       []byte
+	serverHelloDone bool
+
+	// The ECH context needs to be saved across messages in case we encounter a
+	// HelloRetryRequest and we need to decrypt a subsequent ClientHello.
+	echContext []byte
 }
 
 // readRecord reads exactly one record from the TCP connection and returns it.
@@ -110,6 +114,43 @@ func sendRecord(conn *net.TCPConn, rec *tlsproto.Record) error {
 	return nil
 }
 
+func sendClientHello(conn *net.TCPConn, data []byte) error {
+	recLength := len(data) + 4
+	if recLength > tlsproto.RecordMaxLength {
+		return fmt.Errorf("record protocol overflow")
+	}
+
+	// Rebuild the record and handshake header in case they changed.
+	headers := [9]byte{}
+	headers[0] = uint8(tlsproto.ContentTypeHandshake)
+	binary.BigEndian.PutUint16(headers[1:3], uint16(tlsproto.VersionTls10))
+	binary.BigEndian.PutUint16(headers[3:5], uint16(recLength))
+	hsHeader := uint32(tlsproto.HandshakeTypeClientHello) << 24
+	hsHeader += uint32(len(data))
+	binary.BigEndian.PutUint32(headers[5:9], hsHeader)
+
+	// Send the record header.
+	n, err := conn.Write(headers[:])
+	if err != nil {
+		return err
+	}
+	if n != len(headers) {
+		return fmt.Errorf("client hello truncated")
+	}
+
+	// Resend the ClientHello message
+	txLen := 0
+	for txLen < len(data) {
+		n, err := conn.Write(data[txLen:])
+		if err != nil {
+			return err
+		}
+		txLen += n
+	}
+
+	return nil
+}
+
 func (tcon *TlsConnection) handleRequest(ctx context.Context) error {
 	record, err := readRecord(tcon.client)
 	if err != nil {
@@ -153,9 +194,102 @@ func (tcon *TlsConnection) handleRequest(ctx context.Context) error {
 	return nil
 }
 
-// handleResponse records intercepts responses from the backend in case we need
-// to handle a retry request.
-func (tcon *TlsConnection) handleResponses() error {
+// handleInbound continues to process records from the client in case we need
+// to decrypt any retried client hellos.
+func (tcon *TlsConnection) handleInbound() error {
+	for !tcon.serverHelloDone {
+		// Read the next record
+		record, err := readRecord(tcon.client)
+		if err != nil {
+			return err
+		}
+
+		// HACK: Drop inbound ChangeCipherSpecs before getting a ServerHello I
+		// am not sure if this is a Firefox bug or an OpenSSL bug but it seems
+		// that:
+		//  - Firefox sends ECH
+		//  - OpenSSL responds with: HRR | ChangeCipherSpec
+		//  - OpenSSL drops all state for this connection
+		//  - Firefox responds with: ChangeCipherSpec | ECH
+		//  - OpenSSL encounters a ChangeCipherSpec before CH and throws an error.
+		//
+		// To workaround this, if we find an inbound ChangeCipherSpec while
+		// waiting for a hello retry, just drop it.
+		if record.Type == tlsproto.ContentTypeChangeCipherSpec &&
+			len(record.Fragment) == 1 && record.Fragment[0] == 0x01 {
+			continue
+		}
+
+		// If it's anything other than a client hello, send it to the backend.
+		if record.Type != tlsproto.ContentTypeHandshake {
+			err = sendRecord(tcon.backend, record)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if len(record.Fragment) < 4 {
+			return fmt.Errorf("tls handshake truncated")
+		}
+		hsHeader := binary.BigEndian.Uint32(record.Fragment[0:4])
+		hsType := tlsproto.HandshakeType((hsHeader >> 24) & 0xff)
+		hsLength := int(hsHeader & 0xffffff)
+		hsEnd := int(4 + hsLength)
+		if hsEnd > len(record.Fragment) {
+			return fmt.Errorf("tls handshake truncated")
+		}
+		if hsType != tlsproto.HandshakeTypeClientHello {
+			err = sendRecord(tcon.backend, record)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		hsData := record.Fragment[4:hsEnd]
+
+		// Parse the client hello
+		hello := tlsproto.ClientHello{}
+		err = hello.Unmarshal(hsData)
+		if err != nil {
+			return err
+		}
+
+		// Handle the encrypted client hello extension, if any.
+		for _, ext := range hello.Extensions {
+			if ext.ExtType != tlsproto.ExtTypeEncryptedClientHello {
+				continue
+			}
+			err := tcon.processEncryptedHello(&ext, &hello, hsData)
+			if err != nil {
+				return err
+			}
+			// Reconstruct the ClientHelloInner
+			blob, err := hello.Marshal()
+			if err != nil {
+				return err
+			}
+			hsData = blob
+		}
+
+		// Resend the ClientHello
+		err = sendClientHello(tcon.backend, hsData)
+		if err != nil {
+			return err
+		}
+	}
+
+	log.Printf("full send inbound")
+
+	// Once the server hello has been received, we can begin proxying records
+	// without needing to do any parsing.
+	_, err := io.Copy(tcon.backend, tcon.client)
+	return err
+}
+
+// handleOutbound intercepts records from the backend and forwards them to the
+// client until we happen upon a ServerHello after which we just connect the
+// pipes and let the data flow between client and server.
+func (tcon *TlsConnection) handleOutbound() error {
 	for {
 		// Read the next record and resend it to the client.
 		record, err := readRecord(tcon.backend)
@@ -212,16 +346,16 @@ func (tcon *TlsConnection) handleResponses() error {
 		// Check for a TLS1.3 Hello Retry Request, otherwise the connection can
 		// begin proxying data.
 		if hello.GetVersion() < tlsproto.VersionTls13 {
-			tcon.helloDone = true
+			tcon.serverHelloDone = true
 			break
 		}
 		if !hello.IsRetryRequest() {
-			tcon.helloDone = true
+			tcon.serverHelloDone = true
 			break
 		}
 	}
 
-	log.Printf("full send mode engaged")
+	log.Printf("full send outbound")
 
 	// Once the server hello has been received, we can begin proxying records
 	// without needing to do any parsing.
@@ -235,10 +369,16 @@ func (tcon *TlsConnection) processClientHello() error {
 		if ext.ExtType != tlsproto.ExtTypeEncryptedClientHello {
 			continue
 		}
-		err := tcon.processEncryptedHello(&ext)
+		err := tcon.processEncryptedHello(&ext, &tcon.ClientHello, tcon.helloData)
 		if err != nil {
 			return err
 		}
+		// Reconstruct the ClientHelloInner
+		blob, err := tcon.ClientHello.Marshal()
+		if err != nil {
+			return err
+		}
+		tcon.helloData = blob
 	}
 
 	tcon.Versions = make([]tlsproto.ProtocolVersion, 1)
@@ -298,44 +438,7 @@ func (tcon *TlsConnection) processClientHello() error {
 		log.Printf("    %s", version.String())
 	}
 
-	// TODO:
-	return nil
-}
-
-func (tcon *TlsConnection) resendClientHello() error {
-	recLength := len(tcon.helloData) + 4
-	if recLength > tlsproto.RecordMaxLength {
-		return fmt.Errorf("record protocol overflow")
-	}
-
-	// Rebuild the record and handshake header in case they changed.
-	headers := [9]byte{}
-	headers[0] = uint8(tlsproto.ContentTypeHandshake)
-	binary.BigEndian.PutUint16(headers[1:3], uint16(tcon.recordVersion))
-	binary.BigEndian.PutUint16(headers[3:5], uint16(recLength))
-	hsHeader := uint32(tlsproto.HandshakeTypeClientHello) << 24
-	hsHeader += uint32(len(tcon.helloData))
-	binary.BigEndian.PutUint32(headers[5:9], hsHeader)
-
-	// Send the record header.
-	n, err := tcon.backend.Write(headers[:])
-	if err != nil {
-		return err
-	}
-	if n != len(headers) {
-		return fmt.Errorf("backend record truncated")
-	}
-
-	// Resend the ClientHello message
-	txLen := 0
-	for txLen < len(tcon.helloData) {
-		n, err := tcon.backend.Write(tcon.helloData[txLen:])
-		if err != nil {
-			return err
-		}
-		txLen += n
-	}
-
+	// Success - it's now up to the router to handle this message.
 	return nil
 }
 

@@ -86,7 +86,7 @@ func (ech *ECHConfigContents) SetupPrivate() error {
 	return nil
 }
 
-func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) error {
+func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension, hello *tlsproto.ClientHello, rawData []byte) error {
 	ech, err := ext.ParseEncryptedClientHello()
 	if err != nil {
 		return err
@@ -95,36 +95,54 @@ func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) erro
 		return fmt.Errorf("malformed ech outer extension")
 	}
 
-	// Lookup the corresponding ECH configuration
-	var echConfig *ECHConfigContents = nil
-	for index, config := range client.config.ECHConfigs {
-		if config.ConfigId == ech.ConfigId {
-			echConfig = &client.config.ECHConfigs[index]
-			break
+	// Setup the ECH decryption context
+	var opener hpke.Opener
+	if len(client.echContext) > 0 {
+		// If this is a retried ClientHello we must re-use the HPKE context
+		// from the initial request.
+		opener, err = hpke.UnmarshalOpener(client.echContext)
+		if err != nil {
+			return fmt.Errorf("ech context failed: %v", err)
+		}
+	} else {
+		// Lookup the corresponding ECH configuration
+		var echConfig *ECHConfigContents = nil
+		for index, config := range client.config.ECHConfigs {
+			if config.ConfigId == ech.ConfigId {
+				echConfig = &client.config.ECHConfigs[index]
+				break
+			}
+		}
+		if echConfig == nil {
+			return fmt.Errorf("ech config %d not found", ech.ConfigId)
+		}
+
+		// Setup the HPKE opener.
+		kdf := hpke.KDF(ech.CipherKdf)
+		if !kdf.IsValid() {
+			return fmt.Errorf("ech invalid kdf")
+		}
+		aead := hpke.AEAD(ech.CipherAead)
+		if !aead.IsValid() {
+			return fmt.Errorf("ech invalid aead")
+		}
+		suite := hpke.NewSuite(hpke.KEM(echConfig.KemId), kdf, aead)
+		receiver, err := suite.NewReceiver(echConfig.hpkePrivateKey, echConfig.echInfoString)
+		if err != nil {
+			return fmt.Errorf("ech receiver failed: %v", err)
+		}
+		opener, err = receiver.Setup(ech.Enc)
+		if err != nil {
+			return fmt.Errorf("ech setup failed: %v", err)
 		}
 	}
-	if echConfig == nil {
-		return fmt.Errorf("ech config %d not found", ech.ConfigId)
-	}
-
-	// Setup the HPKE opener.
-	kdf := hpke.KDF(ech.CipherKdf)
-	if !kdf.IsValid() {
-		return fmt.Errorf("ech invalid kdf")
-	}
-	aead := hpke.AEAD(ech.CipherAead)
-	if !aead.IsValid() {
-		return fmt.Errorf("ech invalid aead")
-	}
-	suite := hpke.NewSuite(hpke.KEM(echConfig.KemId), kdf, aead)
-	receiver, err := suite.NewReceiver(echConfig.hpkePrivateKey, echConfig.echInfoString)
-	if err != nil {
-		return fmt.Errorf("ech receiver failed: %v", err)
-	}
-	opener, err := receiver.Setup(ech.Enc)
-	if err != nil {
-		return fmt.Errorf("ech setup failed: %v", err)
-	}
+	// Save the ECH context in case we need to handle a retry.
+	defer func() {
+		echContext, err := opener.MarshalBinary()
+		if err == nil {
+			client.echContext = echContext
+		}
+	}()
 
 	// Make a copy of the payload and then zero the original to produce the
 	// ClientHelloOuterAAD. Note that this only works because the extension
@@ -135,33 +153,33 @@ func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) erro
 		ech.Payload[i] = 0
 	}
 
-	outerSessionId := client.ClientHello.SessionId
+	outerSessionId := hello.SessionId
 
 	// Make a copy of the outer extensions, as we will need them to expand
 	// the any compressed extensions in the inner client hello.
-	outerExts := make([]tlsproto.Extension, len(client.ClientHello.Extensions))
-	for index, oex := range client.ClientHello.Extensions {
+	outerExts := make([]tlsproto.Extension, len(hello.Extensions))
+	for index, oex := range hello.Extensions {
 		outerExts[index] = oex
 	}
 
 	// Decrypt the encrypted EncodedClientHelloInner
-	decrypt, err := opener.Open(payload, client.helloData)
+	decrypt, err := opener.Open(payload, rawData)
 	if err != nil {
 		return fmt.Errorf("ech decrypt failed: %v", err)
 	}
 
 	// Parse the inner ClientHello
-	err = client.ClientHello.Unmarshal(decrypt)
+	err = hello.Unmarshal(decrypt)
 	if err != nil {
 		return fmt.Errorf("ech parse error: %v", err)
 	}
 
 	// Restore the session ID from the outer client hello.
-	client.ClientHello.SessionId = outerSessionId
+	hello.SessionId = outerSessionId
 
 	// Expand compressed extensions by copying them from the echOuter
-	for i := 0; i < len(client.ClientHello.Extensions); i++ {
-		ext := client.ClientHello.Extensions[i]
+	for i := 0; i < len(hello.Extensions); i++ {
+		ext := hello.Extensions[i]
 		switch ext.ExtType {
 		case tlsproto.ExtTypeEchOuterExtensions:
 			value, err := ext.ParseEchOuterExtensions()
@@ -173,9 +191,9 @@ func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) erro
 			if err != nil {
 				return err
 			}
-			remainder := client.ClientHello.Extensions[i+1:]
-			client.ClientHello.Extensions = append(client.ClientHello.Extensions[:i], expanded...)
-			client.ClientHello.Extensions = append(client.ClientHello.Extensions, remainder...)
+			remainder := hello.Extensions[i+1:]
+			hello.Extensions = append(hello.Extensions[:i], expanded...)
+			hello.Extensions = append(hello.Extensions, remainder...)
 			i += len(expanded) - 1
 
 		case tlsproto.ExtTypeEncryptedClientHello:
@@ -190,13 +208,6 @@ func (client *TlsConnection) processEncryptedHello(ext *tlsproto.Extension) erro
 			break
 		}
 	}
-
-	// Reconstruct the ClientHelloInner
-	blob, err := client.ClientHello.Marshal()
-	if err != nil {
-		return err
-	}
-	client.helloData = blob
 
 	return nil
 }
